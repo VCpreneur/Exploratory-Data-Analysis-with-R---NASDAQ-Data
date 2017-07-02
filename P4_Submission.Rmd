@@ -1,0 +1,1747 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+NASDAQ Stock Exchange Data Exploration by Ahmad Takatkah
+========================================================
+
+### Overview 
+This report explores stock prices and returns for companies listed on NASDAQ 
+stock exchange. It includes exploring correlations between multiple stock stats 
+for different sectors in the past 50 working days, as of April 30, 2017.  
+
+I am trying to identify the general trends of price and return to get a better 
+idea of what should individual daily traders focus more on to generate more 
+returns, at the highest capital utilization possible. 
+
+In other words: **What are the cheapest stocks that generate the highest returns 
+on daily basis** 
+
+The dataset is obtained from Yahoo Finance using `tidyquant` R package, 
+which produces the data in a tidy "tibble" based on specific arguments given to 
+`tq_exchange()` and `tq_get()` functions.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, packages}
+# Loading all needed libraries
+library(tibble)
+library(GGally)
+library(dplyr)
+library(tidyr)
+library(tidyquant)
+library(ggplot2)
+library(scales)
+library(plotly)
+library(gridExtra)
+
+```
+
+
+```{r echo=FALSE, eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+# Get the Data
+
+# Getting a list of all companies listed in NASDAQ with their industry and 
+# sector categories:
+NASDAQ_Companies <- tq_exchange("NASDAQ")
+
+# Getting the stats of active companies as of April 30, 2017:
+NASDAQ_Stats <- NASDAQ_Companies %>% 
+  select(symbol, sector) %>% 
+  tq_get(get = "key.stats") 
+
+# Getting the prices of those stocks for the past 50 working days:
+NASDAQ_Prices <- NASDAQ_Companies %>% 
+  select(symbol) %>% 
+  tq_get(get = "stock.prices", from = "2017-02-16", to = "2017-04-30") 
+
+# Calculating daily returns for those stocks:
+NASDAQ_Daily_Returns <- NASDAQ_Prices %>%
+    group_by(symbol) %>%
+    tq_transmute(adjusted,
+                 mutate_fun = periodReturn,
+                 period     = "daily")
+
+# Calculating average daily returns for each company 
+NASDAQ_Avg_Daily_Returns <- NASDAQ_Daily_Returns %>% 
+                         group_by(symbol) %>%
+                         summarise(Return.Avg.50.day = mean(daily.returns),
+                         n= n()) %>% # just to make sure it's 50 working days
+                         arrange(symbol)
+NASDAQ_Avg_Daily_Returns <- select(NASDAQ_Avg_Daily_Returns, -n)
+
+# Merging the new variable from the Prices dataset with the Stats dataset:
+NASDAQ_Stats <- merge(NASDAQ_Stats, NASDAQ_Avg_Daily_Returns, by=c("symbol"))
+
+# Wrting the new tibbles to .csv files: 
+write_csv(NASDAQ_Stats, "NASDAQ_Stats.csv")
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, Load_the_Data}
+# Loading the dataset from the csv file as a tibble: 
+NASDAQ_Stats_Base <- read_csv("NASDAQ_Stats.csv")
+```
+
+Here is a glimpse of the dataset: 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Getting to know the variables
+glimpse(NASDAQ_Stats_Base)
+```
+
+From the above list, we can see that "sector" was loaded as a `chr` datatype. 
+For the purpose of our exploratory analysis, we need to convert it to factor.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Converting data types from Character to Factor
+NASDAQ_Stats_Base$sector <- as.factor(NASDAQ_Stats_Base$sector)
+```
+
+__________________________________________________
+
+The dataset has 58 stock stats (variables) for 1,839 companies (observations) 
+listed on NASDAQ from different sectors.
+
+For the purpose of our analysis, we will be focusing on the following 
+variables:
+
+  1. **Symbol**: The companies stock trading symbol
+  2. **Name**: The company's name
+  3. **Sector**: The sector in the company's business is 
+  4. **Price**: The moving average price of the stock in the last 50 days ($)
+  5. **Return**: The average daily return of the stock in the last 50 days ($)
+  6. **Volume**: The daily average of the number shares traded
+  7. **Market.Cap**: The market capitalization of the company (in $)
+  8. **PEG.Ratio**: The ratio of stock market value to the company's earnings
+
+We will also create two new categorical variables:
+
+  9. **Value.Status**: this will differentiate between companies where market 
+     value is more, less, or about equal to (within a +/- 0.1 range) book value
+     Here is a summary of the new variable: 
+     
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# creating a new categorical variable: Value.Status
+NASDAQ_Stats_Base <- NASDAQ_Stats_Base %>% 
+                    mutate(Value.Status = 
+                       ifelse(Price.to.Book > 1.1, "|Market > Book|",
+                       ifelse(Price.to.Book < 0.9, "|Market < Book|",
+                          "|Market ~ Book|")))
+NASDAQ_Stats_Base$Value.Status <- as.factor(NASDAQ_Stats_Base$Value.Status)
+table(NASDAQ_Stats_Base$Value.Status)
+```
+
+  10. **Dividends.Status**: this will differentiate between companies that pay or 
+      don't pay dividends. 
+      Here is a summary of the new variable: 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# creating a new categorical variable: Dividends.Status
+NASDAQ_Stats_Base <- NASDAQ_Stats_Base %>% 
+                    mutate(Dividends.Status = 
+                       ifelse(is.na(NASDAQ_Stats_Base$Dividend.Pay.Date)
+                              & is.na(NASDAQ_Stats_Base$Dividend.per.Share)
+                              & is.na(NASDAQ_Stats_Base$Dividend.Yield), 
+                              "Pays Dividends",
+                              "No Dividends"))
+NASDAQ_Stats_Base$Dividends.Status <- as.factor(NASDAQ_Stats_Base$Dividends.Status)
+table(NASDAQ_Stats_Base$Dividends.Status)
+```
+
+__________________________________________________
+
+Now, here is a gimps of our final dataset after adding the new variables and 
+changing some of the names:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Selecting the needed variables
+NASDAQ_Stats <- NASDAQ_Stats_Base %>% 
+                     select(Symbol = symbol, 
+                            Name,
+                            Sector = sector,
+                            Price = Moving.Average.50.day,
+                            Return = Return.Avg.50.day,
+                            Volume = Average.Daily.Volume,
+                            Market.Cap = Market.Capitalization,
+                            Value.Status,
+                            Dividends.Status,
+                            PEG.Ratio
+                            )
+glimpse(NASDAQ_Stats)
+```
+
+__________________________________________________
+
+And here is a summary of all the variables we have now:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+summary(NASDAQ_Stats)
+```
+
+__________________________________________________
+
+# Univariate Plots Section
+
+Now, let's start exploring our categorical variables first:
+
+### Sector:
+Here is a summary of sectors in this dataset and the number of companies in 
+each sector: 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Producing a table to summarize the factor levels and their counts
+table(NASDAQ_Stats$Sector)
+
+# Sorting factor levels by their counts
+NASDAQ_Stats <- within(NASDAQ_Stats, 
+                   Sector <- factor(Sector, 
+                                    levels=names(sort(-table(Sector), 
+                                                      decreasing=TRUE))))
+
+# Ploting a histgram with ordered levels
+ggplot(subset(NASDAQ_Stats, !is.na(Sector)), aes(Sector)) +
+  geom_histogram(aes(fill = ..x..), stat = "count", show.legend = FALSE) +
+  geom_text(aes(y = (..count..), 
+                label = (..count..)), 
+                stat = "count", vjust = -0.25, size = 3) +
+  scale_fill_gradient(low = "#E5FEFF", high = "#00BFC4") +
+  labs(title = "Companies Breakdown By Sector (Count)", 
+       y = "Number of Observations", x = "Sector") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Ploting a bar chart with percentages of total count
+ggplot(subset(NASDAQ_Stats, !is.na(Sector)), aes(x = Sector)) +
+  geom_bar(aes(fill = ..x.., y = (..count..)/sum(..count..)), 
+           show.legend = FALSE) +
+  geom_text(aes(y = ((..count..)/sum(..count..)), 
+                label = scales::percent((..count..)/sum(..count..))), 
+                stat = "count", vjust = -0.25, size = 3) +
+  scale_y_continuous(labels = percent) +
+  scale_fill_gradient(low = "#E5FEFF", high = "#00BFC4") +
+  labs(title = "Companies Breakdown By Sector (%)", 
+       y = "Percent", x = "Sector") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+NASDAQ is generally known as a tech index or stock market. The plots above show
+what kind of tech is dominating the NASDAQ We can see that General Technology, 
+Health Care Technology, and Consumer Services Technology dominate the market. 
+
+### Dividends.Status:
+Here is a summary of the number of companies in this dataset based on whither 
+they pay dividends or not: 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Producing a table to summarize the factor levels and their counts
+table(NASDAQ_Stats$Dividends.Status)
+
+# Sorting factor levels by their counts
+NASDAQ_Stats <- within(NASDAQ_Stats, 
+                   Dividends.Status <- factor(Dividends.Status, 
+                                    levels=names(sort(-table(Dividends.Status), 
+                                                      decreasing=TRUE))))
+# Ploting a histgram with ordered levels
+ggplot(subset(NASDAQ_Stats, !is.na(Dividends.Status)), aes(Dividends.Status)) +
+  geom_histogram(aes(fill = ..x..), stat = "count") +
+  geom_text(aes(y = (..count..), 
+                label = (..count..)), 
+                stat = "count", vjust = -0.25, size = 3) +
+  scale_fill_gradient(low = "#E5FEFF", high = "#00BFC4") +
+  labs(title = "Companies Breakdown By Dividends.Status (Count)", 
+       y = "Number of Observations", x = "Dividends.Status") +
+  theme(legend.position="none")
+
+# Ploting a bar chart with percentages of total count
+ggplot(subset(NASDAQ_Stats, !is.na(Dividends.Status)), 
+       aes(x = Dividends.Status)) +
+  geom_bar(aes(fill = ..x.., y = (..count..)/sum(..count..))) +
+  geom_text(aes(y = ((..count..)/sum(..count..)), 
+                label = scales::percent((..count..)/sum(..count..))), 
+                stat = "count", vjust = -0.25, size = 3) +
+  scale_y_continuous(labels = percent) +
+  scale_fill_gradient(low = "#E5FEFF", high = "#00BFC4") +
+  labs(title = "Companies Breakdown By Dividends.Status (%)", 
+       y = "Percent", x = "Dividends.Status") +
+  theme(legend.position="none")
+
+```
+
+From the plots above, we can see that a majority of 60% of the companies on 
+NASDAQ pay dividends to their shareholders. It would be interesting to see
+later on in this project how this might affect trading behavior reflected in the 
+volume variable. 
+
+### Value.Status:
+Here is a summary of the number of companies in this dataset based on whither 
+their market values is above, below or within a 0.1 range of their book values:
+(this is a reflection of the traders perception of the stock's future value 
+compared to it's actual accounting value) 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Producing a table to summarize the factor levels and their counts
+table(NASDAQ_Stats$Value.Status)
+
+# Sorting factor levels by their counts
+NASDAQ_Stats <- within(NASDAQ_Stats, 
+                   Value.Status <- factor(Value.Status, 
+                                    levels=names(sort(-table(Value.Status), 
+                                                      decreasing=TRUE))))
+# Ploting a histgram with ordered levels
+ggplot(subset(NASDAQ_Stats, !is.na(Value.Status)), aes(Value.Status)) +
+  geom_histogram(aes(fill = ..x..), stat = "count") +
+  geom_text(aes(y = (..count..), 
+                label = (..count..)), 
+                stat = "count", vjust = -0.25, size = 3) +
+  scale_fill_gradient(low = "#E5FEFF", high = "#00BFC4") +
+  labs(title = "Companies Breakdown By Value.Status (Count)", 
+       y = "Number of Observations", x = "Value.Status") +
+  theme(legend.position="none")
+
+# Ploting a bar chart with percentages of total count
+ggplot(subset(NASDAQ_Stats, !is.na(Value.Status)), aes(x = Value.Status)) +
+  geom_bar(aes(fill = ..x.., y = (..count..)/sum(..count..))) +
+  geom_text(aes(y = ((..count..)/sum(..count..)), 
+                label = scales::percent((..count..)/sum(..count..))), 
+                stat = "count", vjust = -0.25, size = 3) +
+  scale_y_continuous(labels = percent) +
+  scale_fill_gradient(low = "#E5FEFF", high = "#00BFC4") +
+  labs(title = "Companies Breakdown By Value.Status (%)", 
+       y = "Percent", x = "Value.Status") +
+  theme(legend.position="none")
+
+```
+
+From the above plots, we can see that the vast majority of the companies have 
+a market value that's higher than it's book value! We will see how this relates
+to returns and volume later on in this project. 
+
+__________________________________________________
+
+Now, let's start exploring our numerical variables:
+
+### Price: 
+This is basically the average price of the stock in the past 50 days. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Printing Price summary
+cat("Summary of price variable:", "\n")
+summary(NASDAQ_Stats$Price)
+ 
+# Printing the highst 10 prices 
+cat("\n")
+cat("The highest 10 prices:", "\n")
+head(sort(NASDAQ_Stats$Price, decreasing = TRUE), 10)
+ 
+# Ploting the numeric variable histogram
+ggplot(subset(NASDAQ_Stats, !is.na(Price)), aes(Price)) +
+  geom_histogram(fill= "#00BFC4", color = "gray")
+ 
+# Zooming in and changing the bin size
+ggplot(subset(NASDAQ_Stats, !is.na(Price)), aes(Price)) +
+  geom_histogram(binwidth = 1, fill= "#00BFC4", color = "gray") +
+coord_cartesian(xlim = c(0, 100))
+
+# transforming the data using a log10 transform and plotting a boxplot to show 
+# the summary of the variable 
+p1 <- ggplot(subset(NASDAQ_Stats, !is.na(Price)), aes(Price)) +
+  geom_histogram(aes(fill= -(..x..)), bins = 30, color = "gray", 
+                 show.legend = FALSE) +
+  scale_fill_gradient(low = "#00BFC4", high = "#E5FEFF") +
+  scale_x_log10(breaks = seq(10, 100, 30))+
+     labs(y = "Number of Observations", x = "Stock Prices (log10)")
+
+p2 <- ggplot(subset(NASDAQ_Stats, !is.na(Price)), aes(1, Price)) +
+  geom_boxplot(aes(fill= -(..x..)), color = "gray", 
+                 show.legend = FALSE) +
+  scale_fill_gradient(low = "#00BFC4", high = "#E5FEFF") +
+  scale_y_log10(breaks = seq(10, 100, 30)) +
+   labs(y = "Stock Prices (log10)")
+
+grid.arrange(p1, p2, nrow =1, top = "Log Scaled Prices Summary")
+
+
+```
+
+In the first plot, we can't really see enough insights about prices. That's why 
+I zoomed in by cutting the data points above $100. But still, the distribution 
+is positively skewed and we still can't see where most of the prices are. For 
+that, I transformed Price (the x-axis) to a log10 scale in the third plot which
+provided a clearer visualization of the distribution.   
+
+From the above table and plots, we can see that 75% of the stocks on NASDAQ are 
+priced below $40 with only few outlier as seen in the box plot. This might get 
+interesting when we plot price against volume to see if it has any effect on how 
+many expensive vs cheap stocks are traded. 
+
+We will also plot this against returns to see if expensive stocks generate more 
+returns or not. 
+
+Now, let's break the Price plot by Sectors. 
+
+First let's see the summary of price by Sector:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Summarizing Price by Sector
+by(NASDAQ_Stats$Price, NASDAQ_Stats$Sector, summary)
+
+```
+
+And now, let's plot this: 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Plotting prices histogram faceted by sector
+ggplot(subset(NASDAQ_Stats, !is.na(Price) & !is.na(Sector)), aes(Price)) +
+  geom_histogram(fill= "#00BFC4", color = "gray") + 
+  scale_x_log10() +
+  facet_wrap(~Sector) +
+  labs(title = "Histogram of Log Scaled Prices By Sector", 
+       y = "Number of Observations", x = "Stock Prices (log10)")
+```
+
+Well, it's not clear in this faceted plot, but from the table above we can see 
+the there are more observations on the higher end of price for 3 sectors: 
+Capital Goods, Consumer Services, and Transportation. They have higher medians.
+So now we know which sector have the most expensive stocks. 
+
+To see the price trend clearer, let's plot a stacked percentage bars:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Setting custom colors 
+colors <- c("#E5FEFF", "#00BFC4")
+
+# Plotting staacked percentage bars
+ggplot(subset(NASDAQ_Stats, (!is.na(Price) & !is.na(Sector))), aes(Price)) +
+  geom_histogram(aes(fill=Dividends.Status), position = "fill") + 
+  scale_fill_manual(name="", values = colors) +
+  scale_x_log10() +
+  facet_wrap(~Sector) +
+  labs(title = "Stacked Percentage Bars of Log Scaled Prices By Sector", 
+       y = "Percentage", x = "Stock Prices (log10)")
+```
+
+We can now see the trend, stocks of companies that don't pay dividends tend to 
+occur more at the higher end of Price (most right end). 
+
+What if we facet prices by Dividends.Status? 
+
+Summary of Price by Dividends.Status:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+by(NASDAQ_Stats$Price, NASDAQ_Stats$Dividends.Status, summary)
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Plotting transformed prices faceted by dividends status
+ggplot(subset(NASDAQ_Stats, !is.na(Price) & !is.na(Dividends.Status)), aes(Price)) +
+  geom_histogram(fill= "#00BFC4", color = "gray") + 
+  scale_x_log10() +
+  facet_wrap(~Dividends.Status) +
+  labs(title = "Histogram of Log Scaled Prices By Dividends Status", 
+       y = "Number of Observations", x = "Stock Prices (log10)")
+```
+
+So here we see another clear trend. Stocks of companies that don't pay dividends are 
+priced higher than those of companies that pay dividends. 
+
+### Return: 
+This is the average normalized daily return of the stocks in the past 50 days. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+summary(NASDAQ_Stats$Return)
+
+ggplot(subset(NASDAQ_Stats, !is.na(Return)), aes(Return)) +
+  geom_histogram(fill = "#00BFC4")
+
+ggplot(subset(NASDAQ_Stats, !is.na(Return)), aes(Return*1000)) +
+  geom_histogram(aes(fill = Return > 0), binwidth = 0.1) +
+  scale_fill_manual(labels = c("FALSE" = "Positive Return", 
+                               "TRUE" = "Negative Return"), 
+                         values = c("#F8766D", "#00BFC4")) +
+  coord_cartesian(xlim = c(-10, 10)) +
+    labs(title = "Histogram Of Returns", 
+       y = "Number of Observations", x = "Returns (in thousandths)")
+
+```
+
+From the above table and plot, we can see that stock returns are normally 
+distributed around zero (positive returns = gains, negatives returns = losses). 
+Which I think not very promising! However the median that is a little higher 
+than zero (0.0004590). This can help keep some hope that overall returns are 
+positive. 
+
+What if we break the Returns plot by Sector? let's see the summary of returns
+by Sector:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+by(NASDAQ_Stats$Return, NASDAQ_Stats$Sector, summary)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#
+ggplot(subset(NASDAQ_Stats, !is.na(Return) & !is.na(Sector)), aes(Sector, Return*1000)) +
+geom_boxplot(aes(fill = Return > 0) )+
+    coord_cartesian(ylim = c(-10, 10)) +
+    scale_fill_manual(labels = c("FALSE" = "Positive Return", 
+                               "TRUE" = "Negative Return"), 
+                         values = c("#F8766D", "#00BFC4")) +
+      theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    labs(title = "Box Plots of Returns By Sector", 
+       y = "Returns (in thousandths)", x = "Sector") 
+```
+
+From this plot, we can see that some industries have more negative returns than 
+positive like Transportation for example. While others have more positive returns
+than negative, like Public Utilities for example. We can also notice that 
+Technology Secotr has many outliers in both diections. 
+
+Let's do that same of what we did with Price and facet by Dividends.Status:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#
+by(NASDAQ_Stats$Return, NASDAQ_Stats$Dividends.Status, summary)
+
+ggplot(subset(NASDAQ_Stats, !is.na(Return) & !is.na(Dividends.Status)), aes(Return*1000)) +
+geom_histogram(aes(fill = Return > 0), binwidth = 0.1) +
+  scale_fill_manual(labels = c("FALSE" = "Positive Return", 
+                               "TRUE" = "Negative Return"), 
+                         values = c("#F8766D", "#00BFC4")) +
+  coord_cartesian(xlim = c(-10, 10)) +
+  facet_wrap(~Dividends.Status) +
+  labs(title = "Histogram of Returns By Dividends Status", 
+       y = "Number of Observations", x = "Returns (in thousandths)")
+```
+
+This clearly shows yet another trend of stocks of companies that don't pay
+dividends! They generate more returns (higher medians). 
+
+### Volume: 
+This is the daily average number of stocks traded per company
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Printing Volume summary
+summary(NASDAQ_Stats$Volume)
+
+# Ploting the numeric variable histogram
+ggplot(subset(NASDAQ_Stats, !is.na(Volume)), aes(Volume)) +
+  geom_histogram(fill= "#00BFC4", color = "gray")
+
+# transforming the data using a log10 transform and plotting a boxplot to show 
+# the summary of the variable
+p1 <- ggplot(subset(NASDAQ_Stats, !is.na(Volume)), aes(Volume/1000)) +
+  geom_histogram(aes(fill= -(..x..)), color = "gray", show.legend = FALSE) +
+  scale_fill_gradient(low = "#00BFC4", high = "#E5FEFF") +
+  scale_x_log10() +
+  labs(y = "Number of Observatiosns", x = "Volume (In Thousands)")
+
+p2 <- ggplot(subset(NASDAQ_Stats, !is.na(Volume/1000)), aes(1, Volume/1000)) +
+  geom_boxplot(aes(fill= -(..x..)), color = "gray", 
+                 show.legend = FALSE) +
+  scale_fill_gradient(low = "#00BFC4", high = "#E5FEFF") +
+  scale_y_log10() +
+  labs(y = "Volume (In Thousands)")
+
+grid.arrange(p1, p2, nrow =1, top = "Log Scaled Volume Summary")
+```
+
+In the first plot of Volume plots, we face the same issue we faced when we 
+plotted Price. We can't really see enough insights becase the distribution is 
+positively skewed. For that, I transformed Volume (the x-axis) to a log10 scale 
+in the second plot which provided a clearer visualization of the distribution.
+
+From the table and the plot above we see that 75% of the companies have 2/3 of 
+a million shares get traded on daily bases. 
+
+Let's facet that by the sector as we did with Price and Return, but now to see 
+what sectors are highly traded, ot in other words, highly compatitave for daily 
+traders.  
+
+Here is the summary of Volume by Sector: 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+by(NASDAQ_Stats$Volume, NASDAQ_Stats$Sector, summary)
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(subset(NASDAQ_Stats, !is.na(Volume) & !is.na(Sector)), aes(Volume/1000)) +
+  geom_histogram(fill= "#00BFC4", color = "gray") +
+  scale_x_log10() +
+  facet_wrap(~Sector) +
+  labs(title = "Histogram of Volume By Sector", 
+       y = "Number of Observatiosns", x = "Volume (in thousands)")
+```
+
+We can see from the table and plots above that for example, Consumer Services, 
+Health Care, and Technology have higher volumes than other sectors. Is this only 
+because there are more companies in those sectors or because of other factors? 
+We will investigate this more later on in this project. 
+
+Now let's finish this section by faceting by Dividends.Status:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+by(NASDAQ_Stats$Volume, NASDAQ_Stats$Dividends.Status, summary)
+
+ggplot(subset(NASDAQ_Stats, !is.na(Volume) & !is.na(Dividends.Status)), aes(Volume/1000)) +
+  geom_histogram(fill= "#00BFC4", color = "gray") +
+  scale_x_log10() +
+  facet_wrap(~Dividends.Status) +
+  labs(title = "Histogram Of Volume By Dividends Status", 
+       y = "Number of Observatiosns", x = "Volume (in thousands)")
+```
+
+We can see form the table above that people are trading more on daily basis 
+stocks of companies that pay dividends. This makes sense as we saw earlier that 
+stocks of companies that don't pay dividends are generally more expensive, thus 
+less affordable by daily individual traders. 
+
+### PEG.Ratio: 
+This is the earning per share divided by the earning per share growth. This 
+gives a good indication of how the company is priced compared to it's earnings 
+growth. Lets plot our PEG.Ratio variable and see if there is any trends there:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#
+summary(NASDAQ_Stats$PEG.Ratio)
+
+ggplot(subset(NASDAQ_Stats, !is.na(PEG.Ratio)), aes(PEG.Ratio)) +
+  geom_histogram(fill= "#00BFC4", color = "gray")
+
+ggplot(subset(NASDAQ_Stats, !is.na(PEG.Ratio)), aes(PEG.Ratio)) +
+  geom_histogram(aes(fill = PEG.Ratio > 0), binwidth = 0.5, alpha = 0.75) +
+  scale_fill_manual(labels = c("FALSE" = "Positive PEG.Ratio", 
+                               "TRUE" = "Negative PEG.Ratio"), 
+                         values = c("#F8766D", "#00BFC4")) +
+  coord_cartesian(xlim = c(-10, 10)) +
+  labs(title = "Histogram of PEG.Ratio", 
+       y = "Number of Observatiosns", x = "PEG.Ratio")
+
+```
+
+In the first plot of PEG Ratio, we were not able to see anything. I needed to 
+zoom in by adding limits to the x-axis to see the distribution. In addition, in 
+the second plot, I thought it would add more insights if I color the values by 
+whether it's above zero (which signals a good growth rate) or below zero (which 
+signals that earnings are declining). 
+
+It's interesting to see how big of a range there is for this variable while the 
+median is zero! 
+
+Let's break it down by Dividends.Status and by Value.Status: 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#
+by(NASDAQ_Stats$PEG.Ratio, NASDAQ_Stats$Dividends.Status, summary)
+
+ggplot(subset(NASDAQ_Stats, !is.na(PEG.Ratio) & !is.na(Dividends.Status)), aes(PEG.Ratio)) +
+geom_histogram(aes(fill = PEG.Ratio > 0), binwidth = 0.5, alpha = 0.75) +
+  scale_fill_manual(labels = c("FALSE" = "Positive PEG.Ratio", 
+                               "TRUE" = "Negative PEG.Ratio"), 
+                         values = c("#F8766D", "#00BFC4")) +
+  coord_cartesian(xlim = c(-10, 10)) +
+  facet_wrap(~Dividends.Status) +
+  labs(title = "Histogram of PEG.Ratio By Dividends Status", 
+       y = "Number of Observations", x = "PEG.Ratio")
+```
+
+From the table and plot above, it seems that stocks with no Dividends have 
+higher median PEG.Ratios. This goes in line with our theory earlier that such 
+companies grow faster by reinvesting their earnings into the business. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+by(NASDAQ_Stats$PEG.Ratio, NASDAQ_Stats$Value.Status, summary)
+
+ggplot(subset(NASDAQ_Stats, !is.na(PEG.Ratio) & !is.na(Value.Status)), aes(PEG.Ratio)) +
+geom_histogram(aes(fill = PEG.Ratio > 0), binwidth = 0.5, alpha = 0.75) +
+  scale_fill_manual(labels = c("FALSE" = "Positive PEG.Ratio", 
+                               "TRUE" = "Negative PEG.Ratio"), 
+                         values = c("#F8766D", "#00BFC4")) +
+  coord_cartesian(xlim = c(-10, 10)) +
+  facet_wrap(~Value.Status) +
+  labs(title = "Histogram of PEG.Ratio By Value Status", 
+       y = "Number of Observations", x = "PEG.Ratio")
+```
+
+Here we see that companies with market values that are more than their book 
+values tend to have higher median PEG Ratios. 
+
+-----------------------------
+
+# Univariate Analysis
+
+### What is the structure of your dataset?
+The dataset has 58 stock stats (variables) for 1,839 companies (observations) 
+listed on NASDAQ from different sectors.
+
+ 
+      
+### What is/are the main feature(s) of interest in your dataset?
+
+For the purpose of our analysis, we will be focusing on two main variables:
+
+  1. **Price**: The moving average price of the stock in the last 50 days ($)
+  2. **Return**: The average daily return of the stock in the last 50 days ($)
+      
+### What other features in the dataset do you think will help support your \
+investigation into your feature(s) of interest?
+
+To support the exploration, I have used the following features as they either 
+drive or give a signal on price and return: 
+
+  1. **Sector**: The sector in the company's business is 
+  2. **Volume**: The daily average of the number shares traded
+  3. **Market.Cap**: The market capitalization of the company (in $)
+  4. **PEG.Ratio**: The ratio of stock market value to earnings' growth
+
+### Did you create any new variables from existing variables in the dataset?
+
+I also created three more variables from other features in the original dataset
+to give more classifications of the stocks: 
+
+  1. **Value.Status**: this will differentiate between companies where the market 
+     value is more, less, or about equal (within a +/- 0.1 range) the book value
+  2. **Dividends.Status**: this will differentiate between companies that pay or 
+      don't pay dividends. 
+  3. **High.Low.Change.52**: this will give us a normalized range of change 
+      between the highest and lowest price of the stock withing 52 weeks.
+
+### Of the features you investigated, were there any unusual distributions? \
+Did you perform any operations on the data to tidy, adjust, or change the form \
+of the data? If so, why did you do this?
+
+From the initial exploration, we noticed that stocks of companies that don't 
+pay dividends, are priced higher, generate more returns, yet traded less on 
+daily bases. 
+
+Daily traders are most probably individual investors as opposed to long term
+institutional investors. So they might not be able to afford expensive stocks
+and might perceive them as riskier investments. However expensive stocks tend to
+generate more positive returns even on daily bases. 
+
+By learning more about the dataset, we get an explanation on why stocks with no
+dividends are priced higher in the market. The general concept is that when 
+a company doesn't pay dividends, reinvest their earnings into the company to 
+generate more growth. This is showed clearly in the PEG.Ratio plots above (They
+tend to have higher median PEG Ratios).
+
+Also, companies with market values that are more than their book values (high 
+Market-to-Book Ratio) tend to have higher median PEG Ratios. This says that the 
+market is good at valuing companies based on their earning growth rates. If one
+can identify companies that have high PEG Ratio but low Market to Book Ratio, 
+then this would be a catch as it's under-priced. 
+
+---------------------------------
+
+# Bivariate Plots Section
+
+Let's start by plotting all the numerical variables in pairs to see if there is 
+any clear correlation between any pair: 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# choosing which columns to compare
+columns <- c("Price", "Return", "Volume", "Market.Cap", "PEG.Ratio") 
+
+# plot them all in a grid to see what stands out
+ggpairs(NASDAQ_Stats, columns = columns)
+
+```
+
+Judging by the correlation coefficients and the scatter plots in the graph 
+above, there seems to be no clear correlations between our numerical variables.
+
+Let's experiment witb another way to visualize correlations:
+
+```{r}
+ggcorr(NASDAQ_Stats, label = TRUE)
+
+```
+
+The above visualization provides a cleaner way to see the numbers of correlation
+coefficient, and we can see there is no meaningful correlations. 
+
+Let's see if that holds true when we transform the scales to lgo10. I will start 
+by **Price and Volume**: 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#
+cat("Correlation between Volume and Price:", "\n")
+cor(NASDAQ_Stats$Volume, y =NASDAQ_Stats$Price)
+cat("Correlation between log10(Volume) and log10(Price):", "\n")
+cor(log10(NASDAQ_Stats$Volume), y =log10(NASDAQ_Stats$Price))
+
+ggplot(NASDAQ_Stats, aes(Price, Volume)) +
+  geom_point(alpha = 5/10, color = "#00BFC4") +
+  scale_x_log10(limits = c(1, 1000)) +
+  scale_y_log10(limits = c(10, 10000000)) +
+  geom_smooth(method = lm, color = 'white')
+
+
+ggplot(NASDAQ_Stats, aes(Volume, Price)) +
+  geom_point(alpha = 5/10, color = "#00BFC4") +
+  scale_x_log10(limits = c(10, 10000000)) +
+  scale_y_log10(limits = c(1, 1000)) + 
+  geom_smooth(method = lm, color = 'white')
+
+```
+
+From the table above, we can see that the correlation is slightly higher after 
+transforming the data to a log10 scale, but not enough to form an opinion about 
+the relationship between Price and Volume. 
+
+I still wanted to see how this would look if I plot it in two different ways 
+as seen the the two plots above for Price/Volume:
+  - The first plot I scaled both in log10 and zoomed in to the concentrated 
+    chunck of the data points to see how they look. 
+  - In the second plot, I reversed the axises, and here I was ableto see the 
+    slightly higher correlation calculated above seen by the white regression 
+    line on top of the data points.
+
+What about **Return and Volume** Change? Maybe high/low returns could be 
+correlated with trading volumes. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#
+cat("Correlation between Return and Volume Change:", "\n")
+cor(NASDAQ_Stats$Volume, y =NASDAQ_Stats$Return)
+cat("Correlation between log10(Return) and log10(Volume):", "\n")
+cor(log10(NASDAQ_Stats$Volume), y =NASDAQ_Stats$Return)
+
+ggplot(NASDAQ_Stats, aes(Volume, Return*1000)) +
+  geom_point(alpha=5/10, color = "#00BFC4") +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(-10, 10)) + 
+  geom_smooth(method = lm, color = 'white')
+```
+
+By experimenting with the scales to hopefully see some correlations, we still 
+get nothing. As we can see in the aboce figure, the regression line is almost 
+horizontal to the x-axis. 
+
+But let's now try **Return and Price**, then **Return and Market.Cap**: 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(NASDAQ_Stats, aes(Price, Return)) +
+  geom_point(alpha = 5/10, color = "#00BFC4") +
+  scale_y_log10() +
+  scale_x_log10() + 
+  geom_smooth(method = lm, color = 'white')
+```
+
+From the above experimental plot, we don't seem to have any clear correlations 
+between Return and Price.  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(NASDAQ_Stats, aes(Market.Cap, Return)) +
+  geom_point(alpha=5/10, color = "#00BFC4") +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(-0.02, 0.02)) + 
+  geom_smooth(method = lm, color = 'white')
+```
+
+From the above experimental plot, we don't seem to have any clear correlations 
+between Return and Market Cap. 
+
+As a matter of fact, we are still not able to find correlations between any of 
+our numerical variables, even after the data transformations. 
+
+------------------
+
+So let's dig deeper into our **categorical variables** to find some insights 
+about our dataset. 
+
+In the following group of plot, I am just visualizing the summaries by Sector 
+for: **Price**, **Return**, **Volume**, **PEG.Ratio**. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Reordering Sector by Price Median
+NASDAQ_Stats$Sector <- with(NASDAQ_Stats, 
+                            reorder(Sector, Price, FUN=median))
+
+Price_Stats_by_Sector <- subset(NASDAQ_Stats, 
+                                (!is.na(Price) 
+                                 & !is.na(Sector))) %>% 
+                         group_by(Sector) %>%
+                         summarise(Price_mean = mean(Price),
+                                   Price_median = median(Price),
+                         n= n()) %>%
+                         arrange(Sector) 
+
+Means <- select(Price_Stats_by_Sector, Price_mean)$Price_mean
+Means_Labels <- sprintf("$ %.1f", Means)
+
+ggplot(subset(NASDAQ_Stats, (!is.na(Price) & !is.na(Sector))), 
+       aes(Sector, Price)) +
+  geom_point(aes(shape="Mean"), stat='summary', fun.y='mean') +
+  geom_text(stat='summary', fun.y='mean', label = Means_Labels, vjust= -1, 
+            size= 3, fontface = "bold") +
+  geom_jitter(aes(color = Sector), alpha = 0.5, show.legend = FALSE) +
+  geom_boxplot(aes(Sector, Price, fill = Sector), 
+               alpha = 0.25, show.legend = FALSE, varwidth = TRUE) +
+    scale_shape_manual("", values=c("Mean"=4)) +
+  coord_cartesian(ylim = c(0, 60)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        legend.title=element_blank()) +
+  labs(title = "Stock Prices Summary By Sector")
+```
+
+In the above plot, I was able to create a visualization of Price summary for each
+Sector. This will help in identifying Sectors with the highest/lowest prices for 
+me to be able to help daily traders acheive more on capital efficiency when 
+selecting stocks to buy.  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Reordering Sector by Return Median
+NASDAQ_Stats$Sector <- with(NASDAQ_Stats, 
+                            reorder(Sector, Return, FUN=median))
+
+Return_Stats_by_Sector <- subset(NASDAQ_Stats, 
+                                (!is.na(Return) 
+                                 & !is.na(Sector))) %>% 
+                         group_by(Sector) %>%
+                         summarise(Return_mean = mean(Return*1000),
+                                   Return_median = median(Return*1000),
+                         n= n()) %>%
+                         arrange(Sector) 
+
+Means <- select(Return_Stats_by_Sector, Return_mean)$Return_mean
+Means_Labels <- sprintf("%.2f", Means)
+
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) & !is.na(Sector))), 
+       aes(Sector, Return*1000)) +
+  geom_point(aes(shape="Mean"), stat='summary', fun.y='mean') +
+  geom_jitter(aes(color = Sector), alpha = 0.5, show.legend = FALSE) +
+  geom_boxplot(aes(Sector, Return*1000, fill = Sector), 
+               alpha = 0.25, show.legend = FALSE, varwidth = TRUE) +
+    scale_shape_manual("", values=c("Mean"=4)) +
+  geom_text(stat='summary', fun.y='mean', label = Means_Labels, vjust= -1, 
+            size= 3, fontface = "bold") +
+  coord_cartesian(ylim = c(-5, 5)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        legend.title=element_blank()) +
+  labs(title = "Returns Summary By Sector")
+```
+
+In the above plot, I was able to create a visualization of Return summary for each
+Sector. This will help in identifying Sectors with the highest/lowest returns for 
+me to be able to help daily traders acheive more on capital efficiency when 
+selecting stocks to buy, specially if combined with the previous plot of Price 
+summary. 
+
+For example, we can see that Finance sector's stocks are the most expensive 
+stocks and at the same time, one of the lowest lucrative ones.  
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Reordering Sector by Volume Median
+NASDAQ_Stats$Sector <- with(NASDAQ_Stats, 
+                            reorder(Sector, Volume, FUN=median))
+
+Volume_Stats_by_Sector <- subset(NASDAQ_Stats, 
+                                (!is.na(Volume) 
+                                 & !is.na(Sector))) %>% 
+                         group_by(Sector) %>%
+                         summarise(Volume_mean = mean(Volume)/1000,
+                                   Volume_median = median(Volume)/1000,
+                         n= n()) %>%
+                         arrange(Sector) 
+
+Means <- select(Volume_Stats_by_Sector, Volume_mean)$Volume_mean
+Means_Labels <- sprintf("%.0f", Means)
+
+ggplot(subset(NASDAQ_Stats, (!is.na(Volume) & !is.na(Sector))), 
+       aes(Sector, Volume/1000)) +
+  geom_point(aes(shape="Mean"), stat='summary', fun.y='mean') +
+  geom_jitter(aes(color = Sector), alpha = 0.5, show.legend = FALSE) +
+  geom_boxplot(aes(Sector, Volume/1000, fill = Sector), 
+               alpha = 0.25, show.legend = FALSE, varwidth = TRUE) +
+    scale_shape_manual("", values=c("Mean"=4)) +
+  geom_text(stat='summary', fun.y='mean', label = Means_Labels, vjust= -1, 
+            size= 3, fontface = "bold") +
+  coord_cartesian(ylim = c(0, 1000)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        legend.title=element_blank()) +
+  labs(title = "Volume Summary By Sector")
+```
+
+In the above plot, I was able to create a visualization of Volume summary for each
+Sector. This will help in identifying Sectors with the highest/lowest volumes for 
+me to be able to help daily traders to benchmark their trading behavior with the 
+rest of the market. 
+
+If we follow our Finance sector example, we can see that its' stocks are among 
+the least traded ones, which makes sense as they are expensive and generate low 
+returns. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Reordering Sector by PEG.Ratio Median
+NASDAQ_Stats$Sector <- with(NASDAQ_Stats, 
+                            reorder(Sector, PEG.Ratio, FUN=median))
+
+PEG.Ratio_by_Sector <- subset(NASDAQ_Stats, 
+                                (!is.na(PEG.Ratio) 
+                                 & !is.na(Sector))) %>% 
+                         group_by(Sector) %>%
+                         summarise(PEG.Ratio_mean = mean(PEG.Ratio),
+                                   PEG.Ratio_median = median(PEG.Ratio),
+                         n= n()) %>%
+                         arrange(Sector) 
+
+Means <- select(PEG.Ratio_by_Sector, PEG.Ratio_mean)$PEG.Ratio_mean
+Means_Labels <- sprintf("%.2f", Means)
+
+ggplot(subset(NASDAQ_Stats, (!is.na(PEG.Ratio) & !is.na(Sector))), 
+       aes(Sector, PEG.Ratio)) +
+  geom_point(aes(shape="Mean"), stat='summary', fun.y='mean') +
+  geom_jitter(aes(color = Sector), alpha = 0.5, show.legend = FALSE) +
+  geom_boxplot(aes(Sector, PEG.Ratio, fill = Sector), 
+               alpha = 0.25, show.legend = FALSE, varwidth = TRUE) +
+    scale_shape_manual("", values=c("Mean"=4)) +
+  geom_text(stat='summary', fun.y='mean', label = Means_Labels, vjust= -1, 
+            size= 3, fontface = "bold") +
+  coord_cartesian(ylim = c(0, 17)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        legend.title=element_blank()) +
+  labs(title = "PEG.Ratio Summary By Sector")
+```
+
+
+For example, Transportation's stocks have the highest growth ratios, they are not
+as expensive as Finance or Consumer Services, and they are traded less than 
+Health care and Technology, mainly becase they historically had negaive returns. 
+But with such high PEG Ratios, it seems Transportation's stocks would be a good 
+bit as their earnings are growing fast. 
+
+-----------------------
+
+Now let's plot the density per Sector for the same variables to see if that 
+adds more insights: Price, Return, Volume, and PEG.Ratio.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Plotting densities for Price, Return, Volume, and PEG.Ratio
+
+p1 <- ggplot(NASDAQ_Stats, aes(Price)) +
+  geom_density(aes(color=Dividends.Status)) +
+  scale_x_continuous(limits = c(0, 250)) 
+
+p2 <- ggplot(NASDAQ_Stats, aes(Return)) +
+  geom_density(aes(color=Dividends.Status)) +
+  scale_x_continuous(limits = c(-0.05, 0.05)) 
+
+p3 <- ggplot(NASDAQ_Stats, aes(Volume)) +
+  geom_density(aes(color=Dividends.Status)) +
+  scale_x_continuous(limits = c(0, 1000000)) 
+
+p4 <- ggplot(NASDAQ_Stats, aes(PEG.Ratio)) +
+  geom_density(aes(color=Dividends.Status)) +
+  scale_x_continuous(limits = c(-10, 10)) 
+
+grid.arrange(p1, p2, p3, p4, nrow =2, ncol = 2, 
+        top = "Density Plots for Price, Return, Volume, 
+               and PEG Ratio by Dividend Satus")
+
+
+```
+
+These density plots confirm that stocks with no dividends are priced higher, 
+more of them generate positive returns, they are traded less, and more of them 
+have higher PEG Rations. 
+
+There is another way to see this clearer, let's try the Violin plot for this: 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Plotting densities for Price, Return, Volume, and PEG.Ratio
+
+p1 <- ggplot(NASDAQ_Stats, aes(Dividends.Status, Price)) +
+  geom_violin(aes(color=Dividends.Status)) +
+  scale_y_continuous(limits = c(0, 200))
+
+p2 <- ggplot(NASDAQ_Stats, aes(Dividends.Status, Return)) +
+  geom_violin(aes(color=Dividends.Status)) +
+  scale_y_continuous(limits = c(-0.025, 0.025))
+
+p3 <- ggplot(NASDAQ_Stats, aes(Dividends.Status, Volume)) +
+  geom_violin(aes(color=Dividends.Status)) +
+  scale_y_continuous(limits = c(0, 1000000))
+
+p4 <- ggplot(NASDAQ_Stats, aes(Dividends.Status, PEG.Ratio)) +
+  geom_violin(aes(color=Dividends.Status)) +
+  scale_y_continuous(limits = c(-10, 10))
+
+grid.arrange(p1, p2, p3, p4, nrow =2, ncol = 2, 
+        top = "Box Plots for Price, Return, Volume, 
+               and PEG Ratio by Dividend Satus")
+
+```
+
+Here, we can see the trends in a more clear way. Stocks with no dividends tend to
+occure more at higher prices, more of them generate positive returns, they are 
+traded less, and more of them have higher PEG Rations. 
+
+
+-----------------------
+
+# Bivariate Analysis
+
+### Talk about some of the relationships you observed in this part of the \
+investigation. How did the feature(s) of interest vary with other features in \
+the dataset?
+
+Unfortunately, I couldn't find any strong correlations between the numeric 
+features of this dataset, even with multiple experiments in data scale 
+transformation. 
+
+### Did you observe any interesting relationships between the other features \
+(not the main feature(s) of interest)?
+
+I was able to create visualizations for summaries of all the main features 
+broken down by Sector and ordered from the lowest to the highest. This helped 
+me in concluding the following: 
+  - Finance is the most expensive sector, yet it generated the lowest positive
+    returns, and it has a relatively low PEG Ratio. This explains why it's the 
+    second lowest traded sector. 
+  - The highest returns were generated by 3 sectors: Consumer Services, 
+    Technology, and Capital Good (almost the same). Among them, Technology has 
+    the cheapest stocks with the third highest PEG Ratio. This explains why it's
+    the top traded sector. 
+  - Surprisingly, Transportation has the highest PEG Ratio while being among 
+    the lowest priced sectors. It's also third in volume and returns. 
+
+This leads me to conclude that general Technology companies on NASDAQ are the 
+best option for daily traders in terms of price and return. 
+
+Transportation also seems to be a good bet as the PEG Ration is the highest 
+which means it's growing fast and prices would increase soon. 
+
+### What was the strongest relationship you found?
+
+I was also able to confirm the initial exploration observation from the first 
+part of this project. The density plots confirm that stocks with no dividends 
+are priced higher, more of them generate positive returns, they are traded less,
+and they have higher PEG Rations. 
+
+Given that Technology and Transportation sectors are the best choose, I would 
+select companies from those sectors that pays no dividends to maximize the 
+returns. 
+
+-------------------------------
+
+# Multivariate Plots Section
+
+Now, let's experiment with putting it all together. I will start by plotting 
+Price and Return, colored by Volume, and ten sized by Market Cap. 
+
+Here are the three plots:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Price) 
+                             & !is.na(Volume)) 
+                             & !is.na(Market.Cap)), 
+       aes(Price, Return)) +
+  geom_point(aes(color=Volume), alpha=5/10) +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+  scale_color_gradient(low = "#00BFC4", high = "#001010", trans = "log")
+
+
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Price) 
+                             & !is.na(Volume)) 
+                             & !is.na(Market.Cap)), 
+       aes(Price, Return)) +
+  geom_point(aes(size= Market.Cap), color="#00BFC4", alpha=5/10) +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+  geom_smooth(method = lm, color = 'white')
+
+
+
+```
+
+From the above 2 plots for Return and Volume, although it seems that there is 
+kind of a liner relationship, but it's scattered all over the chart, and we 
+already know there is no correlation from the second section of this project above. 
+
+But these plots at least show that the companies with the highest market caps 
+or even highest volumes don't actually generate the highest returns. So we 
+shouldn't be blinded by how big the market value of the company is or how much 
+it's stocks are traded. 
+
+------------------------
+
+Now let's try the same two variables: Price and Return, but this time colored by 
+PEG Ratio with only two colors: above or below zero. Then let's break that down 
+by Dividends.Status and then by Value.Status as we did before: 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+###
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Price) 
+                             & !is.na(PEG.Ratio))), 
+       aes(Price, Return, color=(PEG.Ratio > 0))) +
+  geom_point(alpha=0.75) +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+  geom_smooth(method = "lm", se = FALSE, size=1)
+
+
+###
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Price) 
+                             & !is.na(PEG.Ratio)
+                             & !is.na(Dividends.Status))), 
+       aes(Price, Return, color=(PEG.Ratio > 0))) +
+  geom_point(alpha=5/10) +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+    scale_color_manual(labels = c("FALSE" = "Negative PEG.Ratio", 
+                               "TRUE" = "Positive PEG.Ratio"),  
+                         values = c("#F8766D", "#00BFC4")) +
+  facet_wrap(~Dividends.Status, dir = "v") 
+
+###
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Price) 
+                             & !is.na(PEG.Ratio)
+                             & !is.na(Value.Status))), 
+       aes(Price, Return, color=(PEG.Ratio > 0))) +
+  geom_point(alpha=5/10) +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+    scale_color_manual(labels = c("FALSE" = "Negative PEG.Ratio", 
+                               "TRUE" = "Positive PEG.Ratio"), 
+                         values = c("#F8766D", "#00BFC4")) +
+  facet_wrap(~Value.Status, dir = "v")
+
+```
+
+What's interesting about the first chart of the above 3 experimental plots, is 
+that there are many companies with negative PEG Ratios (in red) that generated 
+high returns. I would explain that my market speculations or that they have 
+announced new returns that are higher that expected. Investing in those stocks 
+would be risky specially around earning announcement times. 
+
+In general, we can clearly see that stocks with higher PEG Ratios tend be have 
+higher prices, mainly because they come from heather companies (financially). We
+also notice that there seems to be more of such companies in the "No Dividends"
+section of the plot. This makes sense as they reinvest their earnings to grow 
+faster.  
+
+In the third chart, we clearly notice that companies or stocks with higher PEG 
+Ratios occur much more where the market value is higher than the book value. 
+Which means they are perceived as more valuable by traders. 
+
+-----------------
+
+Now to get things even more interesting, let's plot Price and Return, but this 
+time let's color by Return with two colors (above or below zero), and size by 
+Volume. Then break down by Dividends.Status and then by Value.Status.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+###
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Price) 
+                             & !is.na(Volume))),
+       aes(Price, Return, color=(Return > 0), size = Volume)) +
+  geom_point(alpha=0.75) +
+  scale_x_log10() +
+  geom_smooth(method = "lm", se = FALSE, size=1) +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+  scale_color_manual(labels = c("FALSE" = "Negative Return", 
+                               "TRUE" = "Positive Return"), 
+                         values = c("#F8766D", "#00BFC4")) 
+
+
+###
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Price) 
+                             & !is.na(Volume)) 
+                             & !is.na(Dividends.Status)), 
+       aes(Price, Return, color=(Return > 0), size = Volume)) +
+  geom_point(alpha=5/10) +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+  scale_color_manual(labels = c("FALSE" = "Negative Return", 
+                               "TRUE" = "Positive Return"), 
+                         values = c("#F8766D", "#00BFC4")) +
+  facet_wrap(~Dividends.Status, dir = "v")
+
+###
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Price) 
+                             & !is.na(Volume)) 
+                             & !is.na(Value.Status)), 
+       aes(Price, Return, color=(Return > 0), size = Volume)) +
+  geom_point(alpha=5/10) +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+  scale_color_manual(labels = c("FALSE" = "Negative Return", 
+                               "TRUE" = "Positive Return"), 
+                         values = c("#F8766D", "#00BFC4")) +
+  facet_wrap(~Value.Status, dir = "v")
+```
+
+In the first chart above, we see very clearly that the highest priced stocks 
+don't necessarily generate the highest returns. Actually, as seen by the line, 
+the higher the price, the lower the return for stocks with positive returns.
+
+The faceted plots didn't really give any more information than what we already 
+have from the previous sections. 
+
+------------------
+
+Below, I am doing exactly the same as the above three charts, but sizing by 
+Market Cap instead of Volume hoping to see some new information. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Price) 
+                             & !is.na(Market.Cap))), 
+       aes(Price, Return, color=(Return > 0), size= Market.Cap)) +
+  geom_point(alpha=0.75) +
+  scale_x_log10() +
+  geom_smooth(method = "lm", se = FALSE, size=1) +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+    scale_color_manual(labels = c("FALSE" = "Negative Return", 
+                               "TRUE" = "Positive Return"), 
+                         values = c("#F8766D", "#00BFC4")) 
+
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Price) 
+                             & !is.na(Market.Cap) 
+                             & !is.na(Dividends.Status))), 
+       aes(Price, Return, color=(Return > 0), size= Market.Cap)) +
+  geom_point(alpha=5/10) +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+    scale_color_manual(labels = c("FALSE" = "Negative Return", 
+                               "TRUE" = "Positive Return"), 
+                         values = c("#F8766D", "#00BFC4")) +
+  facet_wrap(~Dividends.Status, dir = "v")
+
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Price) 
+                             & !is.na(Market.Cap) 
+                             & !is.na(Value.Status))), 
+       aes(Price, Return, color=(Return > 0), size= Market.Cap)) +
+  geom_point(alpha=5/10) +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+    scale_color_manual(labels = c("FALSE" = "Negative Return", 
+                               "TRUE" = "Positive Return"), 
+                         values = c("#F8766D", "#00BFC4")) +
+  facet_wrap(~Value.Status, dir = "v")
+```
+
+Unfortunately, the above 3 experimental plots don't seem to add any new insights 
+to what we already have except that it makes it clearer.   
+
+--------------------
+
+Now let's replace Price on the x-axis by Volume! Maybe this will reveal a hidden 
+key relationship. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Volume) 
+                             & !is.na(Market.Cap))), 
+       aes(Volume, Return, color=Return > 0, size= Market.Cap)) +
+  geom_point(alpha=0.75) +
+  scale_x_log10() +
+  geom_smooth(method = "lm", se = FALSE, size=1) +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+    scale_color_manual(labels = c("FALSE" = "Negative Return", 
+                               "TRUE" = "Positive Return"), 
+                         values = c("#F8766D", "#00BFC4")) 
+
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Volume) 
+                             & !is.na(Market.Cap) 
+                             & !is.na(Dividends.Status))), 
+       aes(Volume, Return, color=Return > 0, size= Market.Cap)) +
+  geom_point(alpha= 5/10) +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+    scale_color_manual(labels = c("FALSE" = "Negative Return", 
+                               "TRUE" = "Positive Return"), 
+                         values = c("#F8766D", "#00BFC4")) +
+  facet_wrap(~Dividends.Status, dir = "v")
+
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Volume) 
+                             & !is.na(Market.Cap) 
+                             & !is.na(Value.Status))), 
+       aes(Volume, Return, color=Return > 0, size= Market.Cap)) +
+  geom_point(alpha= 5/10) +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+    scale_color_manual(labels = c("FALSE" = "Negative Return", 
+                               "TRUE" = "Positive Return"), 
+                         values = c("#F8766D", "#00BFC4")) +
+  facet_wrap(~Value.Status, dir = "v")
+
+```
+
+These 3 charts show that stocks that generate the highest returns are not usually
+traded that often. Which means daily traders shouldn't just follow the crowds! 
+
+What is very interesting about this chart is that there are four companies 
+with minimal trading volume that generate as good returns as the most traded 
+and most values stocks!  
+
+Faceted plots didn't add any value here. 
+
+---------------
+
+Next, I am doing the exact same of the above three charts but I am replacing 
+Market Cap by Price for the size. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Volume) 
+                             & !is.na(Price))), 
+       aes(Volume, Return, color=Return > 0, size= Price)) +
+  geom_point(alpha=0.75) +
+  scale_x_log10() +
+  geom_smooth(method = "lm", se = FALSE, size=1) +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+    scale_color_manual(labels = c("FALSE" = "Negative Return", 
+                               "TRUE" = "Positive Return"), 
+                         values = c("#F8766D", "#00BFC4")) 
+
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Volume) 
+                             & !is.na(Price)
+                             & !is.na(Dividends.Status))), 
+        aes(Volume, Return, color=Return > 0, size= Price)) +
+  geom_point(alpha= 5/10) +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+    scale_color_manual(labels = c("FALSE" = "Negative Return", 
+                               "TRUE" = "Positive Return"), 
+                         values = c("#F8766D", "#00BFC4")) +
+  facet_wrap(~Dividends.Status, dir = "v")
+
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Volume) 
+                             & !is.na(Price)
+                             & !is.na(Value.Status))),  
+        aes(Volume, Return, color=Return > 0, size= Price)) +
+  geom_point(alpha= 5/10) +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+    scale_color_manual(labels = c("FALSE" = "Negative Return", 
+                               "TRUE" = "Positive Return"), 
+                         values = c("#F8766D", "#00BFC4")) +
+  facet_wrap(~Value.Status, dir = "v")
+
+```
+
+In the first plot above, we see that Volume has almost no effect on return! 
+
+Here we still see the same four companies appear once again, but now we get to 
+know that they are also not that expensive! They seem like a good catch for 
+daily traders. This is the kind of stocks that individual daily traders should 
+focus on. 
+
+Faceted plots didn't add any value here. 
+
+--------------------------
+
+# Multivariate Analysis
+
+### Talk about some of the relationships you observed in this part of the \
+investigation. Were there features that strengthened each other in terms of \
+looking at your feature(s) of interest?
+
+Plotting Price and Return sized by Market Cap and colored by Volume helped in 
+seeing big companies based on their actual returns instead of how big the market 
+value is or how much it's stocks are traded. We saw that most of such big 
+companies are out-performed by smaller ones in terms of returns. 
+
+### Were there any interesting or surprising interactions between features?
+
+I was surprised to see many companies with negative PEG Ratios (in red) that 
+generated high returns. But as explained above this could be due to either 
+market speculations or better earnings announcements. But in general I would 
+stay away from those companies unless they announce good new returns to show 
+real potential for growth.
+
+I was also able to identify some companies with minimal trading volume but with 
+as good returns as the most traded and most values stocks!
+
+### OPTIONAL: Did you create any models with your dataset? Discuss the \
+strengths and limitations of your model.
+
+Unfortunately, I was not able to spot any linear relationships to create models. 
+Have we had started with the daily prices dataset, we might have been able to 
+predict some future prices. But this one is mainly about insights derived from 
+the stock stats. 
+
+------------------------
+
+# Final Plots and Summary
+
+### A Grid of Price, Volume and Return Boxplot Summaries: 
+```{r fig.height = 10, fig.width=10, echo=FALSE, Plot_One}
+# First box plot 
+NASDAQ_Stats$Sector <- with(NASDAQ_Stats, 
+                            reorder(Sector, Price, FUN=median))
+
+Price_Stats_by_Sector <- subset(NASDAQ_Stats, 
+                                (!is.na(Price) 
+                                 & !is.na(Sector))) %>% 
+                         group_by(Sector) %>%
+                         summarise(Price_mean = mean(Price),
+                                   Price_median = median(Price),
+                         n= n()) %>%
+                         arrange(Sector) 
+
+Means <- select(Price_Stats_by_Sector, Price_mean)$Price_mean
+Means_Labels <- sprintf("$ %.1f", Means)
+
+price_summary <- ggplot(subset(NASDAQ_Stats, (!is.na(Price) & !is.na(Sector))), 
+       aes(Sector, Price)) +
+  geom_point(aes(shape="Mean"), stat='summary', fun.y='mean') +
+  geom_text(stat='summary', fun.y='mean', label = Means_Labels, vjust= -1, 
+            size= 3, fontface = "bold") +
+  geom_jitter(aes(color = Sector), alpha = 0.5, show.legend = FALSE) +
+  geom_boxplot(aes(Sector, Price, fill = Sector), 
+               alpha = 0.25, show.legend = FALSE, varwidth = TRUE) +
+    scale_shape_manual("", values=c("Mean"=4)) +
+  coord_cartesian(ylim = c(0, 60)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        legend.title=element_blank()) +
+  labs(title = "Stock Prices Summary By Sector")
+
+# Second box plot 
+NASDAQ_Stats$Sector <- with(NASDAQ_Stats, 
+                            reorder(Sector, Volume, FUN=median))
+
+Volume_Stats_by_Sector <- subset(NASDAQ_Stats, 
+                                (!is.na(Volume) 
+                                 & !is.na(Sector))) %>% 
+                         group_by(Sector) %>%
+                         summarise(Volume_mean = mean(Volume)/1000,
+                                   Volume_median = median(Volume)/1000,
+                         n= n()) %>%
+                         arrange(Sector) 
+
+Means <- select(Volume_Stats_by_Sector, Volume_mean)$Volume_mean
+Means_Labels <- sprintf("%.0f", Means)
+
+volume_summary <- ggplot(subset(NASDAQ_Stats, (!is.na(Volume) & !is.na(Sector))), 
+       aes(Sector, Volume/1000)) +
+  geom_point(aes(shape="Mean"), stat='summary', fun.y='mean') +
+  geom_jitter(aes(color = Sector), alpha = 0.5, show.legend = FALSE) +
+  geom_boxplot(aes(Sector, Volume/1000, fill = Sector), 
+               alpha = 0.25, show.legend = FALSE, varwidth = TRUE) +
+    scale_shape_manual("", values=c("Mean"=4)) +
+  geom_text(stat='summary', fun.y='mean', label = Means_Labels, vjust= -1, 
+            size= 3, fontface = "bold") +
+  coord_cartesian(ylim = c(0, 1000)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        legend.title=element_blank()) +
+  labs(title = "Volume Summary By Sector")
+
+# Third box plot 
+NASDAQ_Stats$Sector <- with(NASDAQ_Stats, 
+                            reorder(Sector, Return, FUN=median))
+
+Return_Stats_by_Sector <- subset(NASDAQ_Stats, 
+                                (!is.na(Return) 
+                                 & !is.na(Sector))) %>% 
+                         group_by(Sector) %>%
+                         summarise(Return_mean = mean(Return*1000),
+                                   Return_median = median(Return*1000),
+                         n= n()) %>%
+                         arrange(Sector) 
+
+Means <- select(Return_Stats_by_Sector, Return_mean)$Return_mean
+Means_Labels <- sprintf("%.2f", Means)
+
+return_summary <- ggplot(subset(NASDAQ_Stats, (!is.na(Return) & !is.na(Sector))), 
+       aes(Sector, Return*1000)) +
+  geom_point(aes(shape="Mean"), stat='summary', fun.y='mean') +
+  geom_jitter(aes(color = Sector), alpha = 0.5, show.legend = FALSE) +
+  geom_boxplot(aes(Sector, Return*1000, fill = Sector), 
+               alpha = 0.25, show.legend = FALSE, varwidth = TRUE) +
+    scale_shape_manual("", values=c("Mean"=4)) +
+  geom_text(stat='summary', fun.y='mean', label = Means_Labels, vjust= -1, 
+            size= 3, fontface = "bold") +
+  coord_cartesian(ylim = c(-5, 5)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        legend.title=element_blank()) +
+  labs(title = "Returns Summary By Sector")
+
+# Fourth box plot 
+NASDAQ_Stats$Sector <- with(NASDAQ_Stats, 
+                            reorder(Sector, PEG.Ratio, FUN=median))
+
+PEG.Ratio_by_Sector <- subset(NASDAQ_Stats, 
+                                (!is.na(PEG.Ratio) 
+                                 & !is.na(Sector))) %>% 
+                         group_by(Sector) %>%
+                         summarise(PEG.Ratio_mean = mean(PEG.Ratio),
+                                   PEG.Ratio_median = median(PEG.Ratio),
+                         n= n()) %>%
+                         arrange(Sector) 
+
+Means <- select(PEG.Ratio_by_Sector, PEG.Ratio_mean)$PEG.Ratio_mean
+Means_Labels <- sprintf("%.2f", Means)
+
+PEG_summary <- ggplot(subset(NASDAQ_Stats, (!is.na(PEG.Ratio) & !is.na(Sector))), 
+       aes(Sector, PEG.Ratio)) +
+  geom_point(aes(shape="Mean"), stat='summary', fun.y='mean') +
+  geom_jitter(aes(color = Sector), alpha = 0.5, show.legend = FALSE) +
+  geom_boxplot(aes(Sector, PEG.Ratio, fill = Sector), 
+               alpha = 0.25, show.legend = FALSE, varwidth = TRUE) +
+    scale_shape_manual("", values=c("Mean"=4)) +
+  geom_text(stat='summary', fun.y='mean', label = Means_Labels, vjust= -1, 
+            size= 3, fontface = "bold") +
+  coord_cartesian(ylim = c(0, 10)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        legend.title=element_blank()) +
+  labs(title = "PEG.Ratio Summary By Sector")
+
+# Putting them all togehter
+grid.arrange(price_summary, volume_summary, return_summary, PEG_summary, 
+             ncol = 2, nrow = 2,
+             top = "Summaries of Price, Volume, and Return by Sector")
+
+```
+
+### Description
+This is a great visualization of price, volume and return summaries by sector. 
+It gives daily traders a quick overview of where to focus their attention. Almost 
+half of the valuable information we got from this dataset is loaded in those 
+three box plots. 
+
+For example:   
+  - Finance is the most expensive sector, yet it generated the lowest positive
+    returns, and it has a relatively low PEG Ratio. This explains why it's the 
+    second lowest traded sector. 
+    
+  - The highest returns were generated by 3 sectors: Consumer Services, 
+    Technology, and Capital Good (almost the same). Among them, Technology has 
+    the cheapest stocks with the third highest PEG Ratio. This explains why it's
+    the top traded sector. 
+    
+  - Surprisingly, Transportation has the highest PEG Ratio while being among 
+    the lowest priced sectors. It's also third in volume and returns. 
+
+This leads to conclude that general Technology companies on NASDAQ are the 
+best option for daily traders in terms of price and return. 
+
+Transportation also seems to be a good bet as the PEG Ration is the highest 
+which means it's growing fast and prices would increase soon. 
+
+### Return and Price Sized by Market Cap 
+```{r echo=FALSE, message=FALSE, warning=FALSE, Plot_Two}
+
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Price) 
+                             & !is.na(Market.Cap))), 
+       aes(Price, Return, color=(Return > 0), size= Market.Cap)) +
+  geom_point(alpha=0.75) +
+  scale_x_log10() +
+  geom_smooth(method = "lm", se = FALSE, size=1) +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+  scale_color_manual(labels = c("FALSE" = "Negative Return", 
+                               "TRUE" = "Positive Return"), 
+                         values = c("#F8766D", "#00BFC4")) +
+  labs(title = "Return and Price Sized by Market Cap", 
+         y = "Return", x = "Price (USD)")
+
+```
+
+### Description
+Tjis is an important plot because it shows very clearly that expensive stocks 
+or stocks of companies with the highest market caps, don't necessarily generate 
+the highest returns. Actually, as seen by the line, the higher the price, the 
+lower the return for stocks with positive returns. Daily trader should not be 
+blinded by the how bug the company value. 
+
+
+### Return and Volume Colored by Return 
+```{r echo=FALSE, message=FALSE, warning=FALSE, Plot_Three}
+
+ggplot(subset(NASDAQ_Stats, (!is.na(Return) 
+                             & !is.na(Volume) 
+                             & !is.na(Price))), 
+       aes(Volume, Return, color= (Return > 0))) +
+  geom_point(alpha=0.75) +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(-0.01, 0.01)) +
+  geom_smooth(method = "lm", se = FALSE, size=1) +
+  scale_color_manual(labels = c("FALSE" = "Negative Return", 
+                               "TRUE" = "Positive Return"), 
+                         values = c("#F8766D", "#00BFC4")) +
+  labs(title = "Return and Volume Colored by Return")
+
+```
+
+### Description 
+In this chart, we are actually able to see that most of the stocks that generate 
+the highest returns are not being traded that often. Volume has almost no effect 
+on returns. This means daily traders shouldn't just follow the crowds! 
+
+This chart also shows some companies with minimal trading volume that generate 
+as good returns as the most traded and most values stocks! Such stocks seem to 
+be a good catch for daily traders to keep an eye on.  
+
+----------------
+
+
+# Reflection
+
+This has been an amazing experience! It started rough, and took much more than I
+anticipated, but it's worth all the time I invested in it. 
+
+The biggest challenge was learning how to get and prepare the data in the first 
+place. Once that was solved, I struggled to decided what direction to take and 
+which of the 58 variables to consider. But as I started exploring, the direction 
+kind of forced itself. Giving the nature of the dataset, it all came down to two 
+main stats, price and return. all other variables/features were used to get more 
+insights about how much would it cost to buy a stock, and how much return would 
+that stock generate. 
+
+Unfortunately, there was no clear correlations between any of the numerical 
+variables in th dataset. But I was able to get some interesting and sometimes 
+surprising insights from it. Have I started with the other available dataset, 
+the daily stock prices, I might have been able to create models to predict stock 
+prices and returns. But that could be a good project for the next module: 
+Machine Learning. 
+
+In the future, if I'm to analyze this dataset again, I would definitely focus 
+more on specific Sectors and get into the details of Company's names to develop 
+some opinions about specific companies to direct my attention to and compare 
+with each other.  
+
+----------------
+
+
+# References
+
+ - [Tidyquant Intro](https://cran.r-project.org/web/packages/tidyquant/vignettes/TQ00-introduction-to-tidyquant.html)
+ - [Core Functions in tidyquant, 2017-04-23](https://cran.r-project.org/web/packages/tidyquant/vignettes/TQ01-core-functions-in-tidyquant.html)
+ - [Scaling and Modeling with Tidyquant](https://cran.r-project.org/web/packages/tidyquant/vignettes/TQ03-scaling-and-modeling-with-tidyquant.html)
+ - [Charting with Tidyquant](https://cran.r-project.org/web/packages/tidyquant/vignettes/TQ04-charting-with-tidyquant.html)
+ - [Tidyquant Updates](http://www.business-science.io/code-tools/2017/03/04/tidyquant-update-0-4-0.html)  
+ - [tidyquant: Bringing Quantitative Financial Analysis to the tidyverse](https://www.r-bloggers.com/tidyquant-bringing-quantitative-financial-analysis-to-the-tidyverse/)
+ - [tidyquant 0.3.0: ggplot2 Enhancements, Real-Time Data, and More](https://www.r-bloggers.com/tidyquant-0-3-0-ggplot2-enhancements-real-time-data-and-more-2/)
+ - [tidyquant 0.4.0: PerformanceAnalytics, Improved Documentation, ggplot2 Themes and More](https://www.r-bloggers.com/tidyquant-0-4-0-performanceanalytics-improved-documentation-ggplot2-themes-and-more/)
+ - [Parallel Processing Financial Data with multidplyr + tidyquant](https://www.r-bloggers.com/speed-up-your-code-part-2-parallel-processing-financial-data-with-multidplyr-tidyquant-2/) 
+ - [Tidy Quantitative Financial Analysis](https://cran.r-project.org/web/packages/tidyquant/tidyquant.pdf)
+ - [Price/Earnings To Growth - PEG Ratio](http://www.investopedia.com/terms/p/pegratio.asp)
+ - [The R Graph Gallary](http://www.r-graph-gallery.com/portfolio/ggplot2-package/)
+ - [Order bBrs in ggplot2 bar Graph](http://stackoverflow.com/questions/5208679/order-bars-in-ggplot2-bar-graph)
+ - [Show Percentages Instead of Counts in Bar Charts](http://stackoverflow.com/questions/3695497/show-instead-of-counts-in-charts-of-categorical-variables)
+ - [Creating New Variables in R with mutate() and ifelse()](https://rstudio-pubs-static.s3.amazonaws.com/116317_e6922e81e72e4e3f83995485ce686c14.html#/)
+ - [Data Wrangling with R: tidyr](https://s3.amazonaws.com/udacity-hosted-downloads/ud651/DataWranglingWithR.pdf)
+ - [ggplot2 Layers](https://rpubs.com/hadley/ggplot2-layers)
+ - [Tibbles in R](https://blog.rstudio.org/2016/08/29/tibble-1-2-0/)
+ - [Basics of dplyr](https://www.r-bloggers.com/dplyr-example-1/)
+ - [ggcorr: correlation matrixes with ggplot2](https://briatte.github.io/ggcorr/#controlling-the-coefficient-labels)
+  
+------------------
